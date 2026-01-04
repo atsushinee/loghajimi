@@ -2,7 +2,6 @@ package com.github.atsushinee.loghajimi.action
 
 import com.github.atsushinee.loghajimi.ui.LogHajimiView
 import com.intellij.execution.impl.ConsoleViewImpl
-import com.intellij.execution.ui.ConsoleView
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -14,79 +13,80 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.wm.ToolWindowId
 import com.intellij.openapi.wm.ToolWindowManager
-import javax.swing.JComponent
-import java.util.WeakHashMap
+import com.intellij.ui.content.ContentFactory
 
 class LogHajimiAction : AnAction() {
 
     companion object {
         private val LOG = Logger.getInstance(LogHajimiAction::class.java)
-        private val originalComponents = WeakHashMap<LogHajimiView, JComponent>()
-        private val documentListeners = WeakHashMap<LogHajimiView, DocumentListener>()
+        // 为我们的自定义标签页定义一个唯一的名称
+        private const val LOG_HAJIMI_CONTENT_NAME = "LogHajimi"
     }
 
     init {
+        // 设置动作的图标
         templatePresentation.icon = IconLoader.getIcon("/icons/hajimi.svg", javaClass)
     }
 
+    // 指定 update 方法在后台线程执行，避免阻塞 UI
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
+        // 使用 LangDataKeys.CONSOLE_VIEW 获取 ConsoleView
+        // 并将其安全地转换为 ConsoleViewImpl，以访问 getEditor() 等具体实现方法
         val consoleView = e.getData(LangDataKeys.CONSOLE_VIEW) as? ConsoleViewImpl ?: return
 
+        // 通过 ToolWindowManager 获取当前活动的 Run/Debug 窗口和内容管理器
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.RUN)
             ?: ToolWindowManager.getInstance(project).getToolWindow(ToolWindowId.DEBUG)
             ?: return
         val contentManager = toolWindow.contentManager
-        val selectedContent = contentManager.selectedContent ?: return
 
-        val existingLogHajimiView = selectedContent.component as? LogHajimiView
+        // --- 核心逻辑：查找或创建新的 "LogHajimi" 标签页 ---
 
-        if (existingLogHajimiView != null) {
-            // --- 恢复原始控制台视图 ---
-            originalComponents[existingLogHajimiView]?.let { originalComponent ->
-                val originalConsole = (originalComponent as? ConsoleViewImpl)
-                selectedContent.component = originalComponent
+        // 1. 查找是否已存在 LogHajimi 标签页
+        val existingContent = contentManager.findContent(LOG_HAJIMI_CONTENT_NAME)
 
-                documentListeners[existingLogHajimiView]?.let { listener ->
-                    // 安全地移除监听器，即使 editor 为 null 也不会出错
-                    originalConsole?.editor?.document?.removeDocumentListener(listener)
-                    documentListeners.remove(existingLogHajimiView)
-                }
-                originalComponents.remove(existingLogHajimiView)
-                LOG.warn("恢复原始控制台视图。")
-            }
+        if (existingContent != null) {
+            // 2. 如果已存在，直接选中它并激活工具窗口，不执行任何其他操作
+            contentManager.setSelectedContent(existingContent)
+            toolWindow.activate(null)
+            LOG.warn("找到已存在的 LogHajimi 标签页，并切换到该页。")
         } else {
-            // --- 切换到 LogHajimi 自定义视图 ---
-            // 关键修正：getEditor() 可能返回 null，必须进行检查。如果为 null，则无法继续。
+            // 3. 如果不存在，则创建一个全新的视图和标签页
             val editor = consoleView.editor ?: run {
                 LOG.error("无法获取 ConsoleView 的 Editor 实例。")
                 return
             }
-
             val currentText = editor.document.text
             val logHajimiView = LogHajimiView(project, currentText)
 
-            // 将 LogHajimiView 的生命周期与 Content 绑定，以便自动销毁
-            Disposer.register(selectedContent, logHajimiView)
+            // 4. 使用 ContentFactory 创建一个新的、可关闭的 Content
+            val newContent = ContentFactory.getInstance().createContent(logHajimiView, LOG_HAJIMI_CONTENT_NAME, true)
 
-            // 创建 DocumentListener 以监听新产生的日志
+            // 5. 关键：将 LogHajimiView 的生命周期与新创建的 Content 绑定。
+            // 当用户点击 "x" 关闭这个标签页时，Disposer 会自动调用 logHajimiView.dispose()，从而防止内存泄漏。
+            Disposer.register(newContent, logHajimiView)
+
+            // 6. 创建 DocumentListener 以便在原始控制台有新内容时，同步到我们的视图
             val documentListener = object : DocumentListener {
                 override fun documentChanged(event: DocumentEvent) {
-                    logHajimiView.appendText(event.newFragment.toString())
+                    // 只有当我们的视图可见时才追加文本，以优化性能
+                    if (logHajimiView.isShowing) {
+                        logHajimiView.appendText(event.newFragment.toString())
+                    }
                 }
             }
-            // 此处 editor 已被确认为非 null
-            editor.document.addDocumentListener(documentListener)
+            // 将监听器的生命周期与 logHajimiView（也就是 Content）绑定
+            // 当 logHajimiView 被 dispose 时，这个 listener 会被自动移除
+            editor.document.addDocumentListener(documentListener, logHajimiView)
 
-            // 存储原始组件和监听器，以便之后恢复
-            originalComponents[logHajimiView] = consoleView.component
-            documentListeners[logHajimiView] = documentListener
-
-            // 将 Content 的组件替换为我们的自定义视图
-            selectedContent.component = logHajimiView
-            LOG.warn("切换到 LogHajimi 视图。")
+            // 7. 将新创建的 Content 添加到管理器并选中它
+            contentManager.addContent(newContent)
+            contentManager.setSelectedContent(newContent)
+            toolWindow.activate(null)
+            LOG.warn("创建并切换到新的 LogHajimi 标签页。")
         }
     }
 

@@ -10,8 +10,10 @@ import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBTextField
+import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
 import java.awt.BorderLayout
+import javax.swing.BorderFactory
 import javax.swing.JPanel
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -29,13 +31,21 @@ class LogHajimiView(
     private val editor: Editor = createLogEditor(project, this.originalText)
 
     init {
+        // 使用 panel DSL 构建顶部面板
         val topPanel = panel {
             row {
-                label("过滤:")
-                cell(filterTextField).resizableColumn()
+                label("Filter:")
+                cell(filterTextField)
+                    .resizableColumn()
+                    .align(AlignX.FILL)
             }
         }
+        // 关键修正：为顶部面板添加一个左右各 8 像素的空边框，以增加水平边距
+        topPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 8)
+
+        // 将顶部面板添加到主面板的北部（上方）
         add(topPanel, BorderLayout.NORTH)
+        // 将编辑器组件添加到主面板的中心，它将占据剩余的所有空间
         add(editor.component, BorderLayout.CENTER)
 
         // 为过滤文本框添加文档监听器，实现“输入即搜索”的实时过滤功能
@@ -51,11 +61,10 @@ class LogHajimiView(
      * @param newText 要追加的新日志
      */
     fun appendText(newText: String) {
-        // 同步锁确保线程安全，防止多个线程（如UI线程和后台日志线程）同时修改 originalText
+        // 同步锁确保线程安全
         synchronized(this) {
             originalText += newText
         }
-        // 追加文本后，立即重新应用过滤规则
         filterLogs()
     }
 
@@ -63,11 +72,10 @@ class LogHajimiView(
      * 根据过滤框中的文本过滤日志并更新编辑器显示
      */
     private fun filterLogs() {
-        // 使用 invokeLater 确保 UI 更新在事件分发线程（EDT）上执行，这是 Swing 的基本规则
+        // 在 UI 线程上执行
         ApplicationManager.getApplication().invokeLater {
             val filterText = filterTextField.text
             val currentOriginalText: String
-            // 同步访问，安全地获取当前完整的日志文本
             synchronized(this) {
                 currentOriginalText = originalText
             }
@@ -80,9 +88,8 @@ class LogHajimiView(
                     .joinToString("\n")
             }
 
-            // 使用 WriteCommandAction 来安全地修改编辑器文档，这是 IntelliJ Platform 的要求
+            // 在写入操作中更新编辑器内容
             WriteCommandAction.runWriteCommandAction(project) {
-                // 检查 editor 是否已被释放，防止在组件销毁后进行操作
                 if (editor.isDisposed) return@runWriteCommandAction
                 editor.document.setText(filteredText)
                 editor.caretModel.moveToOffset(editor.document.textLength)
@@ -96,7 +103,6 @@ class LogHajimiView(
      */
     private fun createLogEditor(project: Project, text: String): Editor {
         val document = EditorFactory.getInstance().createDocument(text)
-        // 创建一个只读的编辑器实例
         val editor = EditorFactory.getInstance().createEditor(document, project)!!
         editor.settings.apply {
             isLineNumbersShown = true
@@ -109,8 +115,6 @@ class LogHajimiView(
             isRightMarginShown = false
             isUseSoftWraps = false
         }
-        // 关键修正：必须将 Editor 转换为 EditorEx 接口，然后调用 setColorsScheme 方法。
-        // 不能直接对 editor.colorsScheme 属性赋值，因为它在 API 中是 val（只读）的。
         (editor as? EditorEx)?.setColorsScheme(EditorColorsManager.getInstance().globalScheme)
         return editor
     }
@@ -119,7 +123,6 @@ class LogHajimiView(
      * 实现 Disposable 接口的 dispose 方法，用于释放核心资源
      */
     override fun dispose() {
-        // 释放 Editor 对象是必须的，否则会造成严重的内存泄漏
         if (!editor.isDisposed) {
             EditorFactory.getInstance().releaseEditor(editor)
         }
