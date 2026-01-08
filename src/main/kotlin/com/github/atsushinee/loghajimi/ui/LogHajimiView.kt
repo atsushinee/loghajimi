@@ -1,6 +1,11 @@
 package com.github.atsushinee.loghajimi.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
@@ -29,12 +34,26 @@ class LogHajimiView(
     private val editor: Editor = createLogEditor(project, this.originalText)
 
     init {
+        // --- 创建清除按钮及其工具栏 ---
+        val actionManager = ActionManager.getInstance()
+        // 1. 创建一个动作组，用于容纳我们的清除按钮
+        val actionGroup = DefaultActionGroup()
+        // 2. 将我们自定义的 ClearLogAction 添加到组中
+        actionGroup.add(ClearLogAction())
+        // 3. 为这个动作组创建一个水平的工具栏
+        val toolbar = actionManager.createActionToolbar("LogHajimiViewToolbar", actionGroup, true)
+        // 4. 将工具栏的目标组件设置为当前视图，这对于正确的上下文处理很重要
+        toolbar.targetComponent = this
+
+        // --- 构建顶部面板 ---
         val topPanel = panel {
             row {
                 label("Filter:")
                 cell(filterTextField)
                     .resizableColumn()
                     .align(AlignX.FILL)
+                // 5. 将工具栏组件添加到布局行中
+                cell(toolbar.component)
             }
         }
         topPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 8)
@@ -59,41 +78,55 @@ class LogHajimiView(
     }
 
     /**
+     * 公开方法，用于清空视图中的所有日志
+     */
+    fun clear() {
+        // 同步地将原始文本清空
+        synchronized(this) {
+            originalText = ""
+        }
+        // 重新应用过滤，此时因为原始文本为空，编辑器也会被清空
+        filterLogs()
+    }
+
+    /**
      * 根据过滤框中的文本过滤日志并更新编辑器显示
      */
     private fun filterLogs() {
         ApplicationManager.getApplication().invokeLater {
-            // --- 智能滚动逻辑 ---
-            // 1. 在更新文本前，检查滚动条是否在底部
-            // 关键修正：必须通过 EditorEx 接口获取 JScrollPane，再从中获取 JScrollBar
             val scrollPane = (editor as? EditorEx)?.scrollPane
             val verticalScrollbar = scrollPane?.verticalScrollBar
-
-            // 如果能获取到滚动条，则计算其是否在底部；如果获取不到，默认需要滚动，以保证新日志可见
             val isAtBottom = verticalScrollbar?.let {
-                // 如果滚动条的当前位置 + 可见高度 约等于 滚动条的最大值，我们就认为它在底部
-                it.value + it.visibleAmount >= it.maximum - 10 // 10像素的容差，以提高用户体验
+                it.value + it.visibleAmount >= it.maximum - 10
             } ?: true
 
-            val filterText = filterTextField.text
+            val keywords = filterTextField.text.split(' ').filter { it.isNotBlank() }
+
             val currentOriginalText: String
             synchronized(this) {
                 currentOriginalText = originalText
             }
 
-            val filteredText = if (filterText.isBlank()) {
+            val filteredText = if (keywords.isEmpty()) {
                 currentOriginalText
             } else {
-                currentOriginalText.lineSequence()
-                    .filter { it.contains(filterText, ignoreCase = true) }
+                val result = currentOriginalText.lineSequence()
+                    .filter { line ->
+                        keywords.any { keyword -> line.contains(keyword, ignoreCase = true) }
+                    }
                     .joinToString("\n")
+
+                if (result.isNotEmpty()) {
+                    result + "\n"
+                } else {
+                    result
+                }
             }
 
             WriteCommandAction.runWriteCommandAction(project) {
                 if (editor.isDisposed) return@runWriteCommandAction
                 editor.document.setText(filteredText)
 
-                // 2. 只有当更新前滚动条就在底部时，才执行自动滚动
                 if (isAtBottom) {
                     editor.caretModel.moveToOffset(editor.document.textLength)
                     editor.scrollingModel.scrollToCaret(ScrollType.MAKE_VISIBLE)
@@ -117,7 +150,6 @@ class LogHajimiView(
             additionalColumnsCount = 0
             additionalLinesCount = 0
             isRightMarginShown = false
-            // 关键修正：启用自动换行
             isUseSoftWraps = true
         }
         (editor as? EditorEx)?.setColorsScheme(EditorColorsManager.getInstance().globalScheme)
@@ -130,6 +162,17 @@ class LogHajimiView(
     override fun dispose() {
         if (!editor.isDisposed) {
             EditorFactory.getInstance().releaseEditor(editor)
+        }
+    }
+
+    /**
+     * 定义一个私有内部类来处理清除动作。
+     * 作为内部类，它可以方便地访问外部 LogHajimiView 的 `clear()` 方法。
+     */
+    private inner class ClearLogAction : AnAction("Clear All", "Clears the log content", AllIcons.Actions.GC) {
+        override fun actionPerformed(e: AnActionEvent) {
+            // 调用外部类的 clear 方法
+            this@LogHajimiView.clear()
         }
     }
 }
