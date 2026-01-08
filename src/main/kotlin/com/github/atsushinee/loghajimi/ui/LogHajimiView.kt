@@ -24,14 +24,11 @@ class LogHajimiView(
     initialText: String
 ) : JPanel(BorderLayout()), Disposable {
 
-    // 存储完整的、未经过滤的日志文本。必须是 var 才能追加新内容。
     private var originalText: String = initialText
     private val filterTextField = JBTextField()
-    // Editor 组件用于显示日志，提供比 JTextArea 更好的性能和功能
     private val editor: Editor = createLogEditor(project, this.originalText)
 
     init {
-        // 使用 panel DSL 构建顶部面板
         val topPanel = panel {
             row {
                 label("Filter:")
@@ -40,15 +37,10 @@ class LogHajimiView(
                     .align(AlignX.FILL)
             }
         }
-        // 关键修正：为顶部面板添加一个左右各 8 像素的空边框，以增加水平边距
         topPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 8)
-
-        // 将顶部面板添加到主面板的北部（上方）
         add(topPanel, BorderLayout.NORTH)
-        // 将编辑器组件添加到主面板的中心，它将占据剩余的所有空间
         add(editor.component, BorderLayout.CENTER)
 
-        // 为过滤文本框添加文档监听器，实现“输入即搜索”的实时过滤功能
         filterTextField.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent?) = filterLogs()
             override fun removeUpdate(e: DocumentEvent?) = filterLogs()
@@ -58,10 +50,8 @@ class LogHajimiView(
 
     /**
      * 公开方法，用于从外部（如 Action）向视图追加新的日志文本
-     * @param newText 要追加的新日志
      */
     fun appendText(newText: String) {
-        // 同步锁确保线程安全
         synchronized(this) {
             originalText += newText
         }
@@ -72,8 +62,19 @@ class LogHajimiView(
      * 根据过滤框中的文本过滤日志并更新编辑器显示
      */
     private fun filterLogs() {
-        // 在 UI 线程上执行
         ApplicationManager.getApplication().invokeLater {
+            // --- 智能滚动逻辑 ---
+            // 1. 在更新文本前，检查滚动条是否在底部
+            // 关键修正：必须通过 EditorEx 接口获取 JScrollPane，再从中获取 JScrollBar
+            val scrollPane = (editor as? EditorEx)?.scrollPane
+            val verticalScrollbar = scrollPane?.verticalScrollBar
+
+            // 如果能获取到滚动条，则计算其是否在底部；如果获取不到，默认需要滚动，以保证新日志可见
+            val isAtBottom = verticalScrollbar?.let {
+                // 如果滚动条的当前位置 + 可见高度 约等于 滚动条的最大值，我们就认为它在底部
+                it.value + it.visibleAmount >= it.maximum - 10 // 10像素的容差，以提高用户体验
+            } ?: true
+
             val filterText = filterTextField.text
             val currentOriginalText: String
             synchronized(this) {
@@ -88,12 +89,15 @@ class LogHajimiView(
                     .joinToString("\n")
             }
 
-            // 在写入操作中更新编辑器内容
             WriteCommandAction.runWriteCommandAction(project) {
                 if (editor.isDisposed) return@runWriteCommandAction
                 editor.document.setText(filteredText)
-                editor.caretModel.moveToOffset(editor.document.textLength)
-                editor.scrollingModel.scrollToCaret(ScrollType.MAKE_VISIBLE)
+
+                // 2. 只有当更新前滚动条就在底部时，才执行自动滚动
+                if (isAtBottom) {
+                    editor.caretModel.moveToOffset(editor.document.textLength)
+                    editor.scrollingModel.scrollToCaret(ScrollType.MAKE_VISIBLE)
+                }
             }
         }
     }
@@ -113,7 +117,8 @@ class LogHajimiView(
             additionalColumnsCount = 0
             additionalLinesCount = 0
             isRightMarginShown = false
-            isUseSoftWraps = false
+            // 关键修正：启用自动换行
+            isUseSoftWraps = true
         }
         (editor as? EditorEx)?.setColorsScheme(EditorColorsManager.getInstance().globalScheme)
         return editor
