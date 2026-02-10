@@ -4,12 +4,38 @@
     <name>loghajimi</name>
     <vendor>atsushinee</vendor>
 
+    <!-- 核心依赖：platform 模块是所有插件的基础 -->
     <depends>com.intellij.modules.platform</depends>
+    <!-- 运行/调试相关的 API，例如 ConsoleView, RunContentManager -->
+    <depends>com.intellij.modules.execution</depends>
+    <!-- 语言和编辑器相关的核心 API，例如 LangDataKeys -->
+    <depends>com.intellij.modules.lang</depends>
+    <!--
+      关键修正：添加对 Java 模块的依赖。
+      ConsoleActionsPostProcessor 等许多核心的执行组件都位于此模块中。
+      缺少这个依赖是导致 "Unresolved reference" 错误的根本原因。
+    -->
+    <depends>com.intellij.java</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
+    <actions>
+        <!-- 我们仍然需要在这里定义 Action，但不再指定它的位置 -->
+        <action id="com.github.atsushinee.loghajimi.action.LogHajimiAction"
+                class="com.github.atsushinee.loghajimi.action.LogHajimiAction"
+                text="LogHajimi"
+                description="Filter and view logs in a custom view."/>
+    </actions>
+
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.atsushinee.loghajimi.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.atsushinee.loghajimi.startup.MyProjectActivity" />
+        <!--
+          使用 consoleActionsPostProcessor 扩展点。
+          这会告诉 IDE 在每次创建控制台后，调用我们的 LogHajimiConsoleActionsPostProcessor 类。
+          我们的类会负责将 LogHajimiAction 按钮动态地添加到工具栏中。
+        -->
+        <consoleActionsPostProcessor
+                implementation="com.github.atsushinee.loghajimi.action.LogHajimiConsoleActionsPostProcessor"/>
+
+        <notificationGroup id="LogHajimi Notification" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>
